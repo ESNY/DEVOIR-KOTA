@@ -1,18 +1,18 @@
 """
 summarizer.py
 =============
-Partie 2 : Résumé intelligent des articles via l'API Google Gemini (gratuit).
+Part 2: Intelligent article summarization via the Google Gemini API.
 
-Workflow :
-  Article brut → build_prompt() → API Gemini → parse_response() → résumé enrichi
+Workflow:
+  Raw article -> build_prompt() -> Gemini API -> parse_response() -> enriched summary
 
-Chaque article ressort avec :
-  - summary    : résumé en 2-3 phrases, en français
-  - keywords   : liste de 3-5 mots-clés financiers
-  - sentiment  : "positif" | "négatif" | "neutre"
-  - importance : score 1-5 (5 = très important pour les marchés)
+Each article is returned with:
+  - summary    : 2-3 sentence English summary
+  - keywords   : list of 3-5 financial keywords
+  - sentiment  : "positive" | "negative" | "neutral"
+  - importance : score from 1 to 5 (5 = very important for markets)
 
-Obtenir une clé gratuite : https://aistudio.google.com  (sans CB)
+Get a free key: https://aistudio.google.com
 """
 
 import json
@@ -24,80 +24,69 @@ from typing import Optional
 
 from google import genai
 
-# ──────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
-MODEL        = "gemini-2.0-flash"   # rapide, gratuit, 1500 req/jour
-MAX_RETRIES  = 1                    # 1 retry en cas d'erreur transitoire
-RETRY_DELAY  = 2                    # secondes entre les tentatives
-MAX_TEXT_LEN = 800                  # troncature du texte d'entrée
+MODEL = "gemini-2.0-flash"   # Fast free-tier model
+MAX_RETRIES = 1              # One retry for transient errors
+RETRY_DELAY = 2              # Seconds between attempts
+MAX_TEXT_LEN = 800           # Input text truncation length
 
-# Initialisation du client Gemini (lit GEMINI_API_KEY dans l'env)
+# Initialize the Gemini client from GEMINI_API_KEY in the environment.
 _api_key = os.environ.get("GEMINI_API_KEY", "")
-_client  = genai.Client(api_key=_api_key) if _api_key else None
+_client = genai.Client(api_key=_api_key) if _api_key else None
 
 
-# ──────────────────────────────────────────────
-# 1. Construction du prompt
-# ──────────────────────────────────────────────
 def build_prompt(article: dict) -> str:
     """
-    Construit le prompt envoyé à Gemini pour résumer un article.
+    Build the prompt sent to Gemini to summarize an article.
 
-    Cas limite : texte trop long → tronqué à MAX_TEXT_LEN caractères
-    pour éviter de dépasser la fenêtre de contexte et maîtriser les coûts.
+    Edge case: overly long text is truncated to MAX_TEXT_LEN characters to avoid
+    exceeding the context window and to keep costs predictable.
     """
-    title  = article.get("title", "Sans titre")
-    text   = article.get("summary", "")
-    source = article.get("source", "Inconnue")
+    title = article.get("title", "Untitled")
+    text = article.get("summary", "")
+    source = article.get("source", "Unknown")
 
-    # Cas limite : contenu trop long
     if len(text) > MAX_TEXT_LEN:
-        text = text[:MAX_TEXT_LEN] + "…"
-        logger.debug(f"Texte tronqué à {MAX_TEXT_LEN} chars pour : {title[:40]}")
+        text = text[:MAX_TEXT_LEN] + "..."
+        logger.debug(f"Text truncated to {MAX_TEXT_LEN} chars for: {title[:40]}")
 
-    prompt = f"""Tu es un analyste financier senior. Résume l'article suivant de façon concise et structurée.
+    prompt = f"""You are a senior financial analyst. Summarize the following article in a concise, structured way.
 
-SOURCE : {source}
-TITRE  : {title}
-TEXTE  : {text}
+SOURCE: {source}
+TITLE : {title}
+TEXT  : {text}
 
-Réponds UNIQUEMENT avec un objet JSON valide (sans markdown, sans backticks), respectant exactement ce format :
+Reply ONLY with a valid JSON object (no markdown, no backticks) that exactly follows this format:
 {{
-  "summary":    "Résumé en 2-3 phrases maximum, en français, centré sur l'impact marché.",
-  "keywords":   ["mot-clé1", "mot-clé2", "mot-clé3"],
-  "sentiment":  "positif" | "négatif" | "neutre",
+  "summary":    "Summary in 2-3 sentences maximum, in English, focused on market impact.",
+  "keywords":   ["keyword1", "keyword2", "keyword3"],
+  "sentiment":  "positive" | "negative" | "neutral",
   "importance": 3
 }}
 
-Règles :
-- summary    : 2-3 phrases max, factuel, sans opinion personnelle
-- keywords   : 3 à 5 mots-clés financiers pertinents (entreprise, indice, thème...)
-- sentiment  : impact perçu pour les marchés financiers
-- importance : entier de 1 (anecdotique) à 5 (événement majeur de marché)
+Rules:
+- summary    : 2-3 sentences max, factual, no personal opinion
+- keywords   : 3 to 5 relevant financial keywords (company, index, theme...)
+- sentiment  : perceived impact on financial markets
+- importance : integer from 1 (minor) to 5 (major market event)
 """
     return prompt
 
 
-# ──────────────────────────────────────────────
-# 2. Appel à l'API Gemini
-# ──────────────────────────────────────────────
 def call_gemini(prompt: str, retries: int = MAX_RETRIES) -> Optional[str]:
     """
-    Envoie le prompt à Gemini et retourne le texte brut de la réponse.
+    Send the prompt to Gemini and return the raw response text.
 
-    Cas limites gérés :
-    - Clé API absente                  → fallback immédiat (mode sans IA)
-    - Clé invalide (401/403)           → message clair + fallback
-    - Quota dépassé (429)              → fallback None (résumé brut utilisé)
-    - Timeout / erreur réseau          → retry une fois, puis None
-    - Erreur générique                 → log + None
+    Handled edge cases:
+    - Missing API key                 -> immediate fallback (no-AI mode)
+    - Invalid key (401/403)           -> clear log message + fallback
+    - Quota exceeded (429)            -> fallback None (raw summary used)
+    - Timeout / network error         -> one retry, then None
+    - Generic error                   -> log + None
     """
-    # Cas limite : clé API non configurée
     if not _api_key or _client is None:
-        logger.warning("GEMINI_API_KEY absente — passage en mode fallback (résumé brut)")
+        logger.warning("GEMINI_API_KEY missing - switching to fallback mode (raw summary)")
         return None
 
     for attempt in range(retries + 1):
@@ -108,101 +97,98 @@ def call_gemini(prompt: str, retries: int = MAX_RETRIES) -> Optional[str]:
             )
             return response.text
 
-        except Exception as e:
-            error_str = str(e).lower()
+        except Exception as error:
+            error_text = str(error).lower()
 
-            # Cas limite : clé API invalide
-            if "401" in error_str or "403" in error_str or "api_key" in error_str or "invalid" in error_str:
-                logger.error("Clé API Gemini invalide — vérifie GEMINI_API_KEY")
+            if "401" in error_text or "403" in error_text or "api_key" in error_text or "invalid" in error_text:
+                logger.error("Invalid Gemini API key - check GEMINI_API_KEY")
                 return None
 
-            # Cas limite : quota journalier dépassé
-            if "429" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
-                logger.warning("Quota Gemini dépassé — passage en mode fallback")
+            if "429" in error_text or "quota" in error_text or "resource_exhausted" in error_text:
+                logger.warning("Gemini quota exceeded - switching to fallback mode")
                 return None
 
-            # Cas limite : timeout ou erreur réseau → on retente
             if attempt < retries:
-                logger.warning(f"Erreur Gemini, nouvelle tentative ({attempt + 1}/{retries}) : {e}")
+                logger.warning(f"Gemini error, retrying ({attempt + 1}/{retries}): {error}")
                 time.sleep(RETRY_DELAY)
             else:
-                logger.error(f"Erreur Gemini persistante : {e}")
+                logger.error(f"Persistent Gemini error: {error}")
                 return None
 
     return None
 
 
-# ──────────────────────────────────────────────
-# 3. Parsing de la réponse JSON
-# ──────────────────────────────────────────────
+def _normalize_sentiment(value: str) -> str:
+    sentiment = (value or "").strip().lower()
+    return {
+        "negative": "negative",
+        "positive": "positive",
+        "neutral": "neutral",
+    }.get(sentiment, "neutral")
+
+
 def parse_response(raw_text: str, article: dict) -> dict:
     """
-    Extrait le JSON structuré retourné par Gemini.
+    Extract the structured JSON returned by Gemini.
 
-    Cas limites gérés :
-    - JSON valide directement         → parsing standard
-    - JSON entouré de backticks       → nettoyage puis parsing
-    - JSON invalide / réponse vide    → fallback avec valeurs par défaut
-    - Champs manquants dans le JSON   → complétion avec valeurs par défaut
+    Handled edge cases:
+    - Direct valid JSON               -> standard parsing
+    - JSON wrapped in backticks        -> cleanup then parsing
+    - Invalid JSON / empty response    -> fallback with default values
+    - Missing JSON fields              -> completed with default values
     """
     fallback = {
-        "summary":    article.get("summary", "")[:300],
-        "keywords":   [],
-        "sentiment":  "neutre",
+        "summary": article.get("summary", "")[:300],
+        "keywords": [],
+        "sentiment": "neutral",
         "importance": 1,
-        "_fallback":  True,
+        "_fallback": True,
     }
 
     if not raw_text or not raw_text.strip():
-        logger.warning("Réponse API vide — fallback activé")
+        logger.warning("Empty API response - fallback enabled")
         return fallback
 
-    # Cas limite : Gemini a parfois ajouté des balises ```json … ```
     cleaned = re.sub(r"```(?:json)?\s*", "", raw_text).replace("```", "").strip()
 
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        # Cas limite : JSON malformé → extraction par regex
         match = re.search(r"\{.*\}", cleaned, re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group())
             except json.JSONDecodeError:
-                logger.warning("JSON introuvable dans la réponse — fallback activé")
+                logger.warning("JSON not found in response - fallback enabled")
                 return fallback
         else:
-            logger.warning("Pas de JSON dans la réponse — fallback activé")
+            logger.warning("No JSON in response - fallback enabled")
             return fallback
 
-    # Cas limite : champs manquants → valeurs par défaut
     return {
-        "summary":    str(data.get("summary",   fallback["summary"])),
-        "keywords":   list(data.get("keywords",  [])),
-        "sentiment":  str(data.get("sentiment",  "neutre")),
+        "summary": str(data.get("summary", fallback["summary"])),
+        "keywords": list(data.get("keywords", [])),
+        "sentiment": _normalize_sentiment(str(data.get("sentiment", "neutral"))),
         "importance": _safe_importance(data.get("importance", 1)),
-        "_fallback":  False,
+        "_fallback": False,
     }
 
 
-# ──────────────────────────────────────────────
-# 4. Résumé d'un seul article
-# ──────────────────────────────────────────────
 def summarize_article(article: dict) -> dict:
     """
-    Pipeline complet pour un article : build_prompt → call_gemini → parse_response.
-    Retourne l'article original enrichi avec les champs IA.
+    Full pipeline for one article: build_prompt -> call_gemini -> parse_response.
+    Returns the original article enriched with AI fields.
     """
     prompt = build_prompt(article)
-    raw    = call_gemini(prompt)
+    raw = call_gemini(prompt)
 
     if raw is None:
         ai_fields = {
-            "summary":    article.get("summary", "")[:300],
-            "keywords":   [],
-            "sentiment":  "neutre",
+            "summary": article.get("summary", "")[:300],
+            "keywords": [],
+            "sentiment": "neutral",
             "importance": 1,
-            "_fallback":  True,
+            "_fallback": True,
         }
     else:
         ai_fields = parse_response(raw, article)
@@ -210,24 +196,21 @@ def summarize_article(article: dict) -> dict:
     return {**article, **ai_fields}
 
 
-# ──────────────────────────────────────────────
-# 5. Résumé d'une liste d'articles
-# ──────────────────────────────────────────────
 def summarize_all(articles: list[dict], delay: float = 0.5) -> list[dict]:
     """
-    Résume tous les articles en séquence avec un délai entre chaque appel
-    pour respecter le rate limit de l'API Gemini gratuite (15 req/min).
+    Summarize all articles sequentially with a delay between calls to respect
+    the free Gemini API rate limit.
 
     Args:
-        articles : liste issue de collector.collect_news()
-        delay    : pause en secondes entre chaque appel API
+        articles: list returned by collector.collect_news()
+        delay: pause in seconds between API calls
     """
-    results        = []
-    total          = len(articles)
+    results = []
+    total = len(articles)
     fallback_count = 0
 
-    for i, article in enumerate(articles, 1):
-        logger.info(f"Résumé {i}/{total} : {article['title'][:50]}…")
+    for index, article in enumerate(articles, 1):
+        logger.info(f"Summary {index}/{total}: {article['title'][:50]}...")
 
         enriched = summarize_article(article)
         results.append(enriched)
@@ -235,57 +218,51 @@ def summarize_all(articles: list[dict], delay: float = 0.5) -> list[dict]:
         if enriched.get("_fallback"):
             fallback_count += 1
 
-        if i < total:
+        if index < total:
             time.sleep(delay)
 
     logger.info(
-        f"Résumés terminés : {total} articles "
-        f"({fallback_count} en mode fallback)"
+        f"Summaries complete: {total} articles "
+        f"({fallback_count} in fallback mode)"
     )
     return results
 
 
-# ──────────────────────────────────────────────
-# Helper interne
-# ──────────────────────────────────────────────
 def _safe_importance(value) -> int:
     """
-    Convertit la valeur d'importance en entier entre 1 et 5.
-    Cas limite : valeur hors range ou non numérique → 1
+    Convert the importance value to an integer between 1 and 5.
+    Edge case: out-of-range or non-numeric value -> 1.
     """
     try:
-        v = int(value)
-        return max(1, min(5, v))
+        number = int(value)
+        return max(1, min(5, number))
     except (ValueError, TypeError):
         return 1
 
 
-# ──────────────────────────────────────────────
-# Test rapide (python summarizer.py)
-# ──────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     test_article = {
-        "title":     "La BCE maintient ses taux directeurs à 4,5%",
-        "summary":   (
-            "La Banque centrale européenne a décidé lors de sa réunion de jeudi "
-            "de maintenir ses taux directeurs inchangés à 4,5%, conformément aux "
-            "attentes des marchés. Christine Lagarde a indiqué que la politique "
-            "monétaire resterait restrictive aussi longtemps que nécessaire pour "
-            "ramener l'inflation vers l'objectif de 2%."
+        "title": "The ECB keeps its benchmark rates at 4.5%",
+        "summary": (
+            "The European Central Bank decided at its Thursday meeting to keep "
+            "benchmark interest rates unchanged at 4.5%, in line with market "
+            "expectations. Christine Lagarde said monetary policy would remain "
+            "restrictive for as long as needed to bring inflation back toward "
+            "the 2% target."
         ),
-        "source":    "Reuters Finance",
-        "link":      "https://reuters.com/example",
+        "source": "Reuters Finance",
+        "link": "https://reuters.com/example",
         "published": "2025-05-26",
     }
 
-    print("Test du summarizer Gemini avec un article fictif...\n")
+    print("Testing the Gemini summarizer with a sample article...\n")
     result = summarize_article(test_article)
 
-    print(f"Titre     : {result['title']}")
-    print(f"Résumé IA : {result['summary']}")
-    print(f"Mots-clés : {result['keywords']}")
+    print(f"Title     : {result['title']}")
+    print(f"AI summary: {result['summary']}")
+    print(f"Keywords  : {result['keywords']}")
     print(f"Sentiment : {result['sentiment']}")
     print(f"Importance: {result['importance']}/5")
     print(f"Fallback  : {result['_fallback']}")

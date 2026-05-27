@@ -123,7 +123,7 @@ For each article, attempts to fetch the full text from the source page:
 If `GEMINI_API_KEY` is configured, each article is processed by Google Gemini to produce:
 - A concise summary
 - Keywords
-- Sentiment: `positif`, `négatif`, or `neutre`
+- Sentiment: `positive`, `negative`, or `neutral`
 - Importance score (1–5)
 
 Without Gemini, articles are displayed in raw mode with the scraped text as-is.
@@ -138,9 +138,9 @@ Built with **Streamlit**, styled with the KOTA brand identity (navy `#0B1E3D`, g
 
 | Control | Description |
 |---|---|
-| **Nombre d'articles** | Slider 5–50, default 15 |
-| **Période** | Last 24h / 2 days / 3 days / 7 days |
-| **Filtrer par sujet** | Filter displayed articles by subject category |
+| **Number of articles** | Slider 5–50, default 15 |
+| **Period** | Last 24h / 2 days / 3 days / 7 days |
+| **Filter by subject** | Filter displayed articles by subject category |
 | **Sentiment** | Filter by sentiment (active only with Gemini key) |
 | **Statut des services** | 🟢/🔴 live status for NewsAPI and Gemini |
 | **Lancer la collecte** | Triggers the full pipeline |
