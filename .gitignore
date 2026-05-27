@@ -1,0 +1,16 @@
+# Clés API — ne jamais partager
+.env
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# VS Code
+.vscode/
+
+# Virtual environment (si tu en crées un)
+venv/
+.venv/
+
+KOTA_WORK_QUANT_LYES_FR.md
